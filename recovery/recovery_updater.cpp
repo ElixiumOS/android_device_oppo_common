@@ -124,6 +124,7 @@ static char * bm_search(const char *str, size_t str_len, const char *pat,
 static int get_tz_version(char *ver_str, size_t len) {
     int ret = 0;
     int fd;
+    int tz_size;
     char *tz_data = NULL;
     char *offset = NULL;
 
@@ -133,21 +134,27 @@ static int get_tz_version(char *ver_str, size_t len) {
         goto err_ret;
     }
 
-    tz_data = (char *) mmap(NULL, TZ_SZ, PROT_READ, MAP_PRIVATE, fd, 0);
+    tz_size = lseek64(fd, 0, SEEK_END);
+    if (tz_size == -1) {
+        ret = errno;
+        goto err_fd_close;
+    }
+
+    tz_data = (char *) mmap(NULL, tz_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (tz_data == (char *)-1) {
         ret = errno;
         goto err_fd_close;
     }
 
     /* Do Boyer-Moore search across TZ data */
-    offset = bm_search(tz_data, TZ_SZ, TZ_VER_STR, TZ_VER_STR_LEN);
+    offset = bm_search(tz_data, tz_size, TZ_VER_STR, TZ_VER_STR_LEN);
     if (offset != NULL) {
         strncpy(ver_str, offset + TZ_VER_STR_LEN, len);
     } else {
         ret = -ENOENT;
     }
 
-    munmap(tz_data, TZ_SZ);
+    munmap(tz_data, tz_size);
 err_fd_close:
     close(fd);
 err_ret:
@@ -155,9 +162,9 @@ err_ret:
 }
 
 /* verify_trustzone("TZ_VERSION", "TZ_VERSION", ...) */
-Value * VerifyTrustZoneFn(const char *name, State *state, int argc, Expr *argv[]) {
+Value * VerifyTrustZoneFn(const char *name, State *state, const std::vector<std::unique_ptr<Expr>>& argv) {
     char current_tz_version[TZ_VER_BUF_LEN];
-    int i, ret;
+    int i, ret, size;
 
     ret = get_tz_version(current_tz_version, TZ_VER_BUF_LEN);
     if (ret) {
@@ -165,25 +172,21 @@ Value * VerifyTrustZoneFn(const char *name, State *state, int argc, Expr *argv[]
                 name, ret);
     }
 
-    char** tz_version = ReadVarArgs(state, argc, argv);
-    if (tz_version == NULL) {
+    std::vector<std::string> tz_version;
+    if (!ReadArgs(state, argv, &tz_version)) {
         return ErrorAbort(state, kArgsParsingFailure, "%s() error parsing arguments", name);
     }
 
     ret = 0;
-    for (i = 0; i < argc; i++) {
+    size = tz_version.size();
+    for (i = 0; i < size; i++) {
         uiPrintf(state, "Comparing TZ version %s to %s",
-                tz_version[i], current_tz_version);
-        if (strncmp(tz_version[i], current_tz_version, strlen(tz_version[i])) == 0) {
+                tz_version[i].c_str(), current_tz_version);
+        if (strncmp(tz_version[i].c_str(), current_tz_version, strlen(tz_version[i].c_str())) == 0) {
             ret = 1;
             break;
         }
     }
-
-    for (i = 0; i < argc; i++) {
-        free(tz_version[i]);
-    }
-    free(tz_version);
 
     return StringValue(strdup(ret ? "1" : "0"));
 }
